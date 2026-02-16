@@ -7,7 +7,7 @@ from openai import OpenAI
 # ==============================
 # 🔑 SET YOUR OPENAI API KEY
 # ==============================
-client = OpenAI(api_key="YOUR_OPENAI_API_KEY")
+client = OpenAI(api_key="")
 
 
 # ==============================
