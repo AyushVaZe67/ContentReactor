@@ -1,151 +1,227 @@
 import os
 from urllib.parse import urlparse, parse_qs
 from youtube_transcript_api import YouTubeTranscriptApi
-from openai import OpenAI
+from groq import Groq
+from dotenv import load_dotenv
+
+# =====================================================
+# 🔑 Load Environment Variables
+# =====================================================
+load_dotenv()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# =====================================================
+# 🔑 Configure Groq API
+# =====================================================
+client = Groq(api_key=GROQ_API_KEY)
+
+MODEL = "llama-3.3-70b-versatile"
 
 
-# ==============================
-# 🔑 SET YOUR OPENAI API KEY
-# ==============================
-client = OpenAI(api_key="")
-
-
-# ==============================
+# =====================================================
 # 1️⃣ Extract Video ID
-# ==============================
+# =====================================================
 def extract_video_id(url):
     parsed = urlparse(url)
 
-    # Standard YouTube URL
     if parsed.hostname in ["www.youtube.com", "youtube.com"]:
-        return parse_qs(parsed.query).get("v", [None])[0]
+        if parsed.path == "/watch":
+            return parse_qs(parsed.query).get("v", [None])[0]
+        if parsed.path.startswith("/live/"):
+            return parsed.path.split("/live/")[1].split("?")[0]
+        if parsed.path.startswith("/shorts/"):
+            return parsed.path.split("/shorts/")[1].split("?")[0]
 
-    # Shortened URL
     if parsed.hostname == "youtu.be":
-        return parsed.path[1:]
+        return parsed.path.split("?")[0][1:]
+
+    if len(url) == 11 and "/" not in url:
+        return url
 
     return None
 
 
-# ==============================
+# =====================================================
 # 2️⃣ Fetch Transcript
-# ==============================
+# =====================================================
 def fetch_transcript(video_id):
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        text = " ".join([entry["text"] for entry in transcript])
-        return text
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
+
+        for transcript in transcript_list:
+            if not transcript.is_generated:
+                fetched = transcript.fetch()
+                return " ".join([entry.text for entry in fetched])
+
+        for transcript in transcript_list:
+            fetched = transcript.fetch()
+            return " ".join([entry.text for entry in fetched])
+
+        return None
+
     except Exception as e:
         print("❌ Transcript not available:", e)
         return None
 
 
-# ==============================
-# 3️⃣ Create Prompt
-# ==============================
-def build_prompt(transcript):
+# =====================================================
+# 3️⃣ Split Transcript into Chunks
+# =====================================================
+def split_transcript(text, chunk_size=4000):
+    return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
 
-    # Limit transcript size (important)
-    transcript = transcript[:15000]
+
+# =====================================================
+# 4️⃣ Call Groq Model
+# =====================================================
+def call_llm(prompt):
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": "You are a YouTube SEO strategist."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.7,
+        max_tokens=1500
+    )
+    return response.choices[0].message.content
+
+
+# =====================================================
+# 5️⃣ Summarize Each Chunk
+# =====================================================
+def summarize_chunks(chunks):
+
+    summaries = []
+
+    for i, chunk in enumerate(chunks):
+
+        print(f"🧠 Summarizing chunk {i+1}/{len(chunks)}")
+
+        prompt = f"""
+Summarize the following podcast transcript section.
+
+Focus on:
+- key ideas
+- important discussions
+- main insights
+
+TEXT:
+{chunk}
+"""
+
+        summary = call_llm(prompt)
+        summaries.append(summary)
+
+    return "\n".join(summaries)
+
+
+# =====================================================
+# 6️⃣ Build Final SEO Prompt
+# =====================================================
+def build_final_prompt(summary):
 
     return f"""
-You are a professional YouTube SEO expert.
+You are an expert YouTube SEO strategist and Hindi content writer.
 
-Analyze the transcript below and generate:
+Analyze the following summarized transcript.
 
-1. A highly clickable SEO-optimized title (max 60 characters)
-2. A compelling description (200–300 words)
-3. 10 strong relevant hashtags
-4. A short 3–4 line summary
+TRANSCRIPT SUMMARY
+{summary}
 
-Make the title engaging and curiosity-driven.
+---
 
-Transcript:
-{transcript}
+TASK 1 — VIDEO TITLES (Hindi)
 
-Return output EXACTLY in this format:
+Write 10 highly clickable YouTube titles.
 
-TITLE:
-...
+Rules:
+- Natural Hindi
+- 5–10 words
+- Curiosity driven
+- No colon
 
-DESCRIPTION:
-...
+---
 
-HASHTAGS:
-...
+TASK 2 — SUMMARY (English)
+
+Write a 4–6 line summary.
+
+---
+
+TASK 3 — DESCRIPTION (Hindi)
+
+Write a compelling 3 line YouTube description.
+
+---
+
+TASK 4 — HASHTAGS
+
+Write 6 SEO hashtags.
+
+---
+
+FORMAT:
+
+TITLES:
+1.
+2.
+3.
+4.
+5.
+6.
+7.
+8.
+9.
+10.
 
 SUMMARY:
-...
+
+DESCRIPTION:
+
+HASHTAGS:
 """
 
 
-# ==============================
-# 4️⃣ Call LLM
-# ==============================
-def generate_content(prompt):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are an expert in YouTube growth and SEO."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7
-        )
-
-        return response.choices[0].message.content
-
-    except Exception as e:
-        print("❌ Error generating content:", e)
-        return None
-
-
-# ==============================
-# 5️⃣ Save Output (Optional)
-# ==============================
-def save_to_file(content, video_id):
-    filename = f"metadata_{video_id}.txt"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(content)
-    print(f"\n✅ Saved to file: {filename}")
-
-
-# ==============================
-# MAIN
-# ==============================
+# =====================================================
+# 🚀 MAIN
+# =====================================================
 if __name__ == "__main__":
 
-    print("\n🚀 Video Metadata Generator\n")
+    print("\n🚀 AI YouTube Metadata Generator\n")
 
-    url = input("Enter YouTube Video URL: ").strip()
+    url = input("Enter YouTube URL or ID: ").strip()
 
     video_id = extract_video_id(url)
 
     if not video_id:
-        print("❌ Invalid YouTube URL")
+        print("❌ Invalid URL")
         exit()
 
-    print("\n📥 Fetching transcript...")
+    print("📥 Fetching transcript...")
     transcript = fetch_transcript(video_id)
 
     if not transcript:
-        print("❌ Could not retrieve transcript.")
+        print("❌ Transcript unavailable")
         exit()
 
-    print("🤖 Generating metadata...\n")
+    print("✂ Splitting transcript...")
+    chunks = split_transcript(transcript)
 
-    prompt = build_prompt(transcript)
-    result = generate_content(prompt)
+    summary = summarize_chunks(chunks)
 
-    if result:
-        print("\n" + "=" * 60)
-        print("🎯 GENERATED CONTENT")
-        print("=" * 60)
-        print(result)
-        print("=" * 60)
+    print("🤖 Generating SEO metadata...")
+    final_prompt = build_final_prompt(summary)
 
-        # Save to file
-        save_to_file(result, video_id)
+    result = call_llm(final_prompt)
 
-    else:
-        print("❌ Failed to generate metadata.")
+    output_path = "output.txt"
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(result)
+
+    print("✅ Output saved!")
+    os.system(f'notepad.exe "{output_path}"')
+
+    input("\nPress Enter to exit...")
